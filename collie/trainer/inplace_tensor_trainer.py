@@ -246,8 +246,9 @@ class InplaceTensorTrainer:
             temperature=self.collie_args.temperature,
             top_p=self.collie_args.top_p
         )
-        logits = logits.tolist()
-        pred_texts = self.tokenizer.batch_decode(logits)
+        predictions = logits.numpy()
+        predictions = np.where(predictions != -100, predictions, self.tokenizer.pad_token_id)
+        pred_texts = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
         return pred_texts
     
     def is_better(self, result_dict, key):
@@ -323,7 +324,7 @@ class InplaceTensorTrainer:
                     by the `model.forward()` method are automatically removed. It must implement `__len__`.
             """
         if eval_dataset is None and self.eval_dataset is None:
-            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+            return None
         eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
         data_collator = self.eval_data_collator
 
