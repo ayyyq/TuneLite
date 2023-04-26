@@ -57,9 +57,15 @@ class MyDataset(Dataset):
             # "Human: "+sample['instruction']+sample['input']+"\n Assistant: "+sample['output']
             if self.split == 'train':
                 source = f"Human: {instance['instruction']}\nAssistant: "
-                target = f"{instance['output']}{self.tokenizer.eos_token}"
+                if self.data_args.special_tag is not None:
+                    target = f"{self.data_args.special_tag}{instance['output']}{self.tokenizer.eos_token}"
+                else:
+                    target = f"{instance['output']}{self.tokenizer.eos_token}"
             else:
-                source = f"Human: {instance['question']}\nAssistant: "
+                if self.data_args.special_tag is not None:
+                    source = f"Human: {instance['question']}\nAssistant: {self.data_args.special_tag}"
+                else:
+                    source = f"Human: {instance['question']}\nAssistant: "
                 target = f"{instance['std_answer']}{self.tokenizer.eos_token}"
 
             example = source + target

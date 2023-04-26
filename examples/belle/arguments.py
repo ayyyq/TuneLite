@@ -22,6 +22,7 @@ class DataArguments:
     train_on_inputs: bool = field(default=False, metadata={"help": "Whether to train on input."})
     max_length: int = field(default=1024)
     sample_size: int = field(default=-1, metadata={"help": "The number of samples to use."})
+    special_tag: str = field(default=None, metadata={"help": "The special tag prepended to targets."})
 
 
 @dataclass

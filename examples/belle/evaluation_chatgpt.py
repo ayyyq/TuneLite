@@ -13,7 +13,7 @@ openai.api_key = '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'
 
 import wandb
 from fastNLP import print, logger
-os.environ['WANDB_MODE'] = 'offline'
+# os.environ['WANDB_MODE'] = 'offline'
 
 
 def get_input_prompt(prompt, instance):
@@ -70,7 +70,7 @@ def main():
         "--temperature", type=float, default=0.0, help="temperature for GPT-3"
     )
     # data
-    parser.add_argument("--data_dir", type=str, default='outputs/belle_llama-13B_eval-debug/output_lr0.01_warmup0.05_clipgradnorm5.0')
+    parser.add_argument("--data_dir", type=str, default='outputs/belle_llama-65B_sft-1w/output_lr0.01_warmup0.05_clipgradnorm5.0/checkpoint-0-eval')
     parser.add_argument(
         "--resume_id", type=int, default=-1,
         help="resume from which question id (current line number in the output file), if the experiment fails accidently (e.g., network error)"
@@ -86,10 +86,11 @@ def main():
     for line in open('examples/belle/eval/eval_prompt.json', 'r'):
         prompt = json.loads(line)
         prompts[prompt['class'].lower()] = prompt['prompt']
-    print('Writing scores to {}'.format(os.path.join(args.data_dir, 'chatgpt_scores.jsonl')))
-    with open(os.path.join(args.data_dir, 'chatgpt_scores.jsonl'), 'w') as output:
+    output_filename = os.path.join(args.data_dir, 'chatgpt_scores.jsonl') if args.resume_id < 0 else os.path.join(args.data_dir, f'chatgpt_scores_{args.resume_id}.jsonl')
+    print('Writing scores to {}'.format(output_filename))
+    with open(output_filename, 'w') as output:
         for i, instance in enumerate(data):
-            if i < args.resume_id:
+            if i < args.resume_id - 1:
                 continue
 
             # minibatch size should be 1 because GPT-3 API takes only 1 input for each request

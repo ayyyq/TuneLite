@@ -32,4 +32,8 @@ class CollieArguments(Seq2SeqTrainingArguments):
 
     max_new_tokens: int = field(default=100, metadata={"help": "The maximum numbers of tokens to generate, ignoring the number of tokens in the prompt."})
     temperature: float = field(default=1.0, metadata={"help": "The value used to modulate the next token probabilities."})
+    top_k: int = field(default=50, metadata={"help": "The number of highest probability vocabulary tokens to keep for top-k-filtering."})
     top_p: float = field(default=1.0, metadata={"help": "If set to float < 1, only the smallest set of most probable tokens with probabilities that add up to top_p or higher are kept for generation."})
+    do_sample: bool = field(default=True, metadata={"help": " Whether or not to use sampling ; use greedy decoding otherwise."})
+    repetition_penalty: float = field(default=1.0, metadata={"help": "The parameter for repetition penalty. 1.0 means no penalty. See this paper for more details."})
+

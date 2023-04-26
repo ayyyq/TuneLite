@@ -244,7 +244,11 @@ class InplaceTensorTrainer:
             batch['input_ids'], batch['attention_mask'],
             max_new_tokens=self.collie_args.max_new_tokens,
             temperature=self.collie_args.temperature,
-            top_p=self.collie_args.top_p
+            top_k=self.collie_args.top_k,
+            top_p=self.collie_args.top_p,
+            do_sample=self.collie_args.do_sample,
+            repetition_penalty=self.collie_args.repetition_penalty,
+            eos_token_id=self.tokenizer.eos_token_id,
         )
         predictions = logits.detach().cpu().numpy()
         predictions = np.where(predictions != -100, predictions, self.tokenizer.pad_token_id)

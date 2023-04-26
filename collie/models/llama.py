@@ -27,6 +27,42 @@ from fairscale.nn.model_parallel.layers import (
 from .llama_tokenizer import HFLikeTokenizer, Tokenizer
 from collie.log import print
 
+
+def temperature_warper(scores, temperature):
+    return scores / temperature
+
+
+def top_k_warper(scores, k):
+    top_k = min(k, scores.size(-1))  # Safety check
+    # Remove all tokens with a probability less than the last token of the top-k
+    indices_to_remove = scores < torch.topk(scores, top_k)[0][..., -1, None]
+    scores = scores.masked_fill(indices_to_remove, -float("Inf"))
+    return scores
+
+
+def top_p_warper(scores, p):
+    sorted_logits, sorted_indices = torch.sort(scores, descending=False)
+    cumulative_probs = sorted_logits.softmax(dim=-1).cumsum(dim=-1)
+
+    # Remove tokens with cumulative top_p above the threshold (token with 0 are kept)
+    sorted_indices_to_remove = cumulative_probs <= (1 - p)
+
+    # scatter sorted tensors to original indexing
+    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+    scores = scores.masked_fill(indices_to_remove, -float("Inf"))
+    return scores
+
+
+def repetition_penalty_logits_processor(input_ids, scores, penalty):
+    score = torch.gather(scores, 1, input_ids)
+
+    # if score < 0 then repetition penalty has to be multiplied to reduce the previous token probability
+    score = torch.where(score < 0, score * penalty, score / penalty)
+
+    scores.scatter_(1, input_ids, score)
+    return scores
+
+
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
@@ -430,23 +466,37 @@ class Transformer(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         max_new_tokens: int,
-        temperature: float,
+        temperature: float = 1.0,
+        top_k: int = 50,
         top_p: float = 1.0,
-        no_repeat_ngram_size=None,
+        do_sample: bool = False,
+        repetition_penalty: float = 1.0,
+        eos_token_id: int = 2,
     ):
         generated_tokens = []
         pre_pos = 0
         old_input_ids = input_ids
         start_pos = input_ids.shape[1] # length of prompt
 
+        # keep track of which sequences are already finished
+        unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+
         for cur_pos in range(start_pos, start_pos+max_new_tokens):
-            logits = self._forward(input_ids[:,pre_pos:cur_pos], attention_mask[:,pre_pos:cur_pos], pre_pos)[:,-1,:]
-            if temperature > 0:
-                probs = torch.softmax(logits.float() / temperature, dim=-1).type_as(logits)
-                next_token = sample_top_p(probs, top_p)
+            logits = self._forward(input_ids[:,pre_pos:cur_pos], attention_mask[:,pre_pos:cur_pos], pre_pos)[:, -1, :]
+            if do_sample:
+                probs = repetition_penalty_logits_processor(input_ids, logits, repetition_penalty)
+                probs = temperature_warper(probs, temperature)
+                probs = top_k_warper(probs, top_k)
+                probs = top_p_warper(probs, top_p)
+                next_token = torch.argmax(probs, dim=-1)
             else:
-                next_token = torch.argmax(logits, dim=-1)
+                if temperature > 0:
+                    probs = torch.softmax(logits.float() / temperature, dim=-1).type_as(logits)
+                    next_token = sample_top_p(probs, top_p)
+                else:
+                    next_token = torch.argmax(logits, dim=-1)
             next_token = next_token.reshape(-1)
+            next_token = next_token * unfinished_sequences + eos_token_id * (1 - unfinished_sequences)
             input_ids = torch.cat([input_ids, next_token.unsqueeze(1)], dim=1)
             attention_mask = torch.cat(
                 [attention_mask, torch.ones_like(next_token).unsqueeze(1)],
@@ -454,6 +504,10 @@ class Transformer(nn.Module):
             )
             generated_tokens.append(next_token)
             pre_pos = cur_pos
+
+            unfinished_sequences = unfinished_sequences.masked_fill(next_token == eos_token_id, 0)
+            if unfinished_sequences.max() == 0:
+                break
 
         sequences = torch.concat(
             (old_input_ids, torch.stack(generated_tokens, dim=1)), dim=1

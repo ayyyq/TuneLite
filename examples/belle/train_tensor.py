@@ -110,12 +110,16 @@ def train():
     # ========== 3. Preprocessing the datasets. ==========
     train_dataset = MyDataset(data_args, tokenizer, 'train')
     eval_dataset = MyDataset(data_args, tokenizer, 'eval')
-    set_seed(collie_args.seed)
 
     # ========== 4. Initialize our Trainer. ==========
     def compute_metrics(decoded_preds, dataset, save_prefix='eval'):
         preds, golds = [], []
-        with open(os.path.join(collie_args.output_dir, f"{save_prefix}_predictions.jsonl"), "w") as fout:
+        output_filename = os.path.join(collie_args.output_dir, f"{save_prefix}_predictions.jsonl")
+        index = 1
+        while os.path.exists(output_filename):
+            output_filename = os.path.join(collie_args.output_dir, f"{save_prefix}_predictions_{index}.jsonl")
+            index += 1
+        with open(output_filename, "w") as fout:
             for gold_instance, pred_text in zip(dataset.data, decoded_preds):
                 temp = pred_text.split('Assistant: ')
                 pred = temp[1].strip() if len(temp) > 1 else ''
@@ -133,7 +137,6 @@ def train():
         result = {'score': 0}
         return result
 
-    set_seed(collie_args.seed)
     trainer = InplaceTensorTrainer(
         model=model,
         collie_args=collie_args,
