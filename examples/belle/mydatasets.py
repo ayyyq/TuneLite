@@ -72,14 +72,19 @@ class MyDataset(Dataset):
                 if not self.data_args.train_on_inputs:
                     labels = np.array(labels)
                     labels[:len(source_tokenized['input_ids']) - 1] = IGNORE_INDEX
+                data.append({'input_ids': input_ids,
+                             'labels': labels,
+                             'source': source,
+                             'target': target})
             else:
                 input_ids = source_tokenized['input_ids']
                 labels = copy.deepcopy(input_ids)
-
-            data.append({'input_ids': input_ids,
-                         'labels': labels,
-                         'source': source,
-                         'target': target})
+                data.append({'input_ids': input_ids,
+                             'labels': labels,
+                             'source': source,
+                             'question': instance['question'],
+                             'std_answer': instance['std_answer'],
+                             'class': instance['class']})
 
         torch.save(data, save_file)
         print('Saving data to', save_file)

@@ -61,20 +61,28 @@ def train():
     if collie_args.clip_loss_value:
         hparam_name += '_cliploss' + str(collie_args.clip_loss_value)
     collie_args.output_dir = os.path.join('outputs', tag_name, hparam_name)
+    if 'eval' in collie_args.tag:
+        assert collie_args.resume_from_checkpoint is not None
+        collie_args.output_dir = f"{collie_args.resume_from_checkpoint}-eval"
+    if not os.path.exists(collie_args.output_dir):
+        os.makedirs(collie_args.output_dir, exist_ok=True)
 
-    wandb_config = copy.deepcopy(asdict(collie_args))
-    wandb_config.update(asdict(model_args))
-    wandb_config.update(asdict(data_args))
-    if collie_args.tag == 'debug':
+    if 'debug' in collie_args.tag:
         os.environ['WANDB_MODE'] = 'offline'
     if collie_args.local_rank in [-1, 0]:
         wandb_config = copy.deepcopy(asdict(collie_args))
         wandb_config.update(asdict(model_args))
         wandb_config.update(asdict(data_args))
+        if 'eval' in collie_args.tag:
+            wandb_name = collie_args.resume_from_checkpoint.replace('outputs', 'eval').replace('/', '_')
+        elif 'zero-shot' in collie_args.tag or hparam_name == 'output':
+            wandb_name = tag_name
+        else:
+            wandb_name = '_'.join([tag_name, hparam_name.replace('output_', '')])
         wandb.init(
             project="belle",
             entity='collie_exp',
-            name=tag_name if collie_args.tag == 'zero-shot' or hparam_name == 'output' else '_'.join([tag_name, hparam_name.replace('output_', '')]),
+            name=wandb_name,
             config=wandb_config
         )
 
@@ -101,26 +109,25 @@ def train():
 
     # ========== 3. Preprocessing the datasets. ==========
     train_dataset = MyDataset(data_args, tokenizer, 'train')
-    # eval_dataset = MyDataset(data_args, tokenizer, 'eval')
+    eval_dataset = MyDataset(data_args, tokenizer, 'eval')
     set_seed(collie_args.seed)
 
     # ========== 4. Initialize our Trainer. ==========
-    def compute_metrics(decoded_preds, dataset, save_prefix=None):
+    def compute_metrics(decoded_preds, dataset, save_prefix='eval'):
         preds, golds = [], []
         with open(os.path.join(collie_args.output_dir, f"{save_prefix}_predictions.jsonl"), "w") as fout:
             for gold_instance, pred_text in zip(dataset.data, decoded_preds):
                 temp = pred_text.split('Assistant: ')
                 pred = temp[1].strip() if len(temp) > 1 else ''
                 preds.append(pred)
-                gold = gold_instance['target'][:gold_instance['target'].index(tokenizer.eos_token)]
-                golds.append(gold)
 
                 fout.write(json.dumps({
-                    "source": gold_instance['source'],
-                    "target": gold,
-                    "pred": pred,
-                    'pred_text': pred_text,
-                }) + "\n")
+                    "question": gold_instance['question'],
+                    "std_answer": gold_instance['std_answer'],
+                    'user_answer': pred,
+                    'prediction': pred_text,
+                    'class': gold_instance['class'],
+                }, ensure_ascii=False) + "\n")
             print(f"Saved {save_prefix} predictions to {collie_args.output_dir}.")
 
         result = {'score': 0}
@@ -132,14 +139,14 @@ def train():
         collie_args=collie_args,
         data_collator=DataCollatorForCauselLM(tokenizer, max_length=data_args.max_length, padding_side='left'),
         train_dataset=train_dataset,
-        eval_dataset=None,
+        eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         compute_metrics=compute_metrics,
         cache_dir=os.path.join(model_args.cache_dir, model_args.model_name_or_path.split('-')[-1]),
     )
 
     if 'zero-shot' in collie_args.tag or 'eval' in collie_args.tag:
-        trainer.eval(trainer.global_step, 1, trainer.eval_dataset['test'], trainer.eval_dataloader['test'], 'test')
+        trainer.eval(trainer.global_step, 0, trainer.eval_dataset, trainer.eval_dataloader, 'eval')
     else:
         trainer.train()
 

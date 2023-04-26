@@ -223,7 +223,7 @@ class InplaceTensorTrainer:
                     pred = self.eval_step(batch)
                     all_preds = pred if all_preds is None else all_preds + pred
 
-            result = self.compute_metrics(all_preds, dataset)
+            result = self.compute_metrics(all_preds, dataset, save_prefix=eval_prefix)
             result = {f"{eval_prefix}/{k}": v for k, v in result.items()}
             prefix_metric_for_best_model = f'{eval_prefix}/{self.collie_args.metric_for_best_model}'
             result_value = result[prefix_metric_for_best_model]
@@ -246,7 +246,7 @@ class InplaceTensorTrainer:
             temperature=self.collie_args.temperature,
             top_p=self.collie_args.top_p
         )
-        predictions = logits.numpy()
+        predictions = logits.detach().cpu().numpy()
         predictions = np.where(predictions != -100, predictions, self.tokenizer.pad_token_id)
         pred_texts = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
         return pred_texts

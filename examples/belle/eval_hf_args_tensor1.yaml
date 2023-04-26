@@ -31,7 +31,7 @@ clip_grad_norm: 5.0
 #clip_loss_value: 5.0
 log_level: 'info'
 logging_steps: 1
-resume_from_checkpoint: 'outputs/belle_llama-65B_sft-1w/output_lr0.01_warmup0.05_clipgradnorm5.0/checkpoint-0'
+resume_from_checkpoint: 'outputs/belle_llama-65B_sft-1w/output_warmup0.05_clipgradnorm5.0/checkpoint-0'
 save_strategy: 'no'
 save_total_limit: 0
 seed: 42
