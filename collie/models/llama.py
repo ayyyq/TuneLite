@@ -479,7 +479,7 @@ class Transformer(nn.Module):
         start_pos = input_ids.shape[1] # length of prompt
 
         # keep track of which sequences are already finished
-        unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+        # unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
 
         for cur_pos in range(start_pos, start_pos+max_new_tokens):
             logits = self._forward(input_ids[:,pre_pos:cur_pos], attention_mask[:,pre_pos:cur_pos], pre_pos)[:, -1, :]
@@ -496,7 +496,7 @@ class Transformer(nn.Module):
                 else:
                     next_token = torch.argmax(logits, dim=-1)
             next_token = next_token.reshape(-1)
-            next_token = next_token * unfinished_sequences + eos_token_id * (1 - unfinished_sequences)
+            # next_token = next_token * unfinished_sequences + eos_token_id * (1 - unfinished_sequences)
             input_ids = torch.cat([input_ids, next_token.unsqueeze(1)], dim=1)
             attention_mask = torch.cat(
                 [attention_mask, torch.ones_like(next_token).unsqueeze(1)],
@@ -504,10 +504,12 @@ class Transformer(nn.Module):
             )
             generated_tokens.append(next_token)
             pre_pos = cur_pos
-
-            unfinished_sequences = unfinished_sequences.masked_fill(next_token == eos_token_id, 0)
-            if unfinished_sequences.max() == 0:
+            if next_token == 2:
                 break
+
+            # unfinished_sequences = unfinished_sequences.masked_fill(next_token == eos_token_id, 0)
+            # if unfinished_sequences.max() == 0:
+            #     break
 
         sequences = torch.concat(
             (old_input_ids, torch.stack(generated_tokens, dim=1)), dim=1

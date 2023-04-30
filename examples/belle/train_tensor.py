@@ -3,6 +3,7 @@ import os
 import sys
 import copy
 import json
+import re
 from dataclasses import asdict
 
 import numpy as np
@@ -110,29 +111,34 @@ def train():
     # ========== 3. Preprocessing the datasets. ==========
     train_dataset = MyDataset(data_args, tokenizer, 'train')
     eval_dataset = MyDataset(data_args, tokenizer, 'eval')
+    test_dataset = MyDataset(data_args, tokenizer, 'test')
 
     # ========== 4. Initialize our Trainer. ==========
     def compute_metrics(decoded_preds, dataset, save_prefix='eval'):
         preds, golds = [], []
-        output_filename = os.path.join(collie_args.output_dir, f"{save_prefix}_predictions.jsonl")
-        index = 1
-        while os.path.exists(output_filename):
-            output_filename = os.path.join(collie_args.output_dir, f"{save_prefix}_predictions_{index}.jsonl")
-            index += 1
-        with open(output_filename, "w") as fout:
-            for gold_instance, pred_text in zip(dataset.data, decoded_preds):
-                temp = pred_text.split('Assistant: ')
-                pred = temp[1].strip() if len(temp) > 1 else ''
-                preds.append(pred)
+        if collie_args.local_rank in [-1, 0]:
+            output_filename = os.path.join(collie_args.output_dir, f"{save_prefix}_predictions.jsonl")
+            index = 1
+            while os.path.exists(output_filename):
+                output_filename = os.path.join(collie_args.output_dir, f"{save_prefix}_predictions_{index}.jsonl")
+                index += 1
+            with open(output_filename, "w") as fout:
+                for gold_instance, pred_text in zip(dataset.data, decoded_preds):
+                    temp = pred_text.split('我的回答是')
+                    pred = temp[1].strip() if len(temp) > 1 else ''
+                    if '我回答完了，请您过目。' in pred:
+                        pred = pred.split('我回答完了，请您过目。')[0].strip()
+                    preds.append(pred)
 
-                fout.write(json.dumps({
-                    "question": gold_instance['question'],
-                    "std_answer": gold_instance['std_answer'],
-                    'user_answer': pred,
-                    'prediction': pred_text,
-                    'class': gold_instance['class'],
-                }, ensure_ascii=False) + "\n")
-            print(f"Saved {save_prefix} predictions to {collie_args.output_dir}.")
+                    fout.write(json.dumps({
+                        "question": gold_instance['question'],
+                        "std_answer": gold_instance['std_answer'],
+                        'user_answer': pred,
+                        'prediction': pred_text,
+                        'class': gold_instance['class'],
+                    }, ensure_ascii=False) + "\n")
+                print(f"Saved {save_prefix} predictions to {output_filename}.")
+        torch.distributed.barrier()
 
         result = {'score': 0}
         return result
@@ -152,6 +158,9 @@ def train():
         trainer.eval(trainer.global_step, 0, trainer.eval_dataset, trainer.eval_dataloader, 'eval')
     else:
         trainer.train()
+
+        test_dataloader = trainer.get_eval_dataloader(test_dataset)
+        trainer.eval(trainer.global_step, 0, test_dataset, test_dataloader, 'test')
 
 
 # run with $torchrun --nproc_per_node 2 train_inplace_tensor.py config/tensor_args.yaml

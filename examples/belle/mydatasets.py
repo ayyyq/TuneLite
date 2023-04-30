@@ -16,6 +16,12 @@ from typing import Any, Optional, Union, Callable
 
 IGNORE_INDEX = -100
 REPRODUCIBILITY_SEED = 0
+user_prompt = """[用户] 从现在开始，你是一个回答问题，完成指令的人工智能机器人，你要解答各种类型的问题，包括编程，算数，回答常识或专业知识。请提供尽可能详尽且对用户有帮助的回答。问题可能会包含很多换行符进行格式化，你可以把文本传来起来理解。另外回答算式，代码的时候可以采用markdown的格式进行回答。
+{0:}
+[机器人] """
+agent_prompt = """我的回答是
+{0:}
+我回答完了，请您过目。"""
 
 
 class MyDataset(Dataset):
@@ -31,7 +37,10 @@ class MyDataset(Dataset):
         save_file = os.path.join(save_dir, f'{split}.pt')
         if data_args.refresh or not os.path.exists(save_file):
             if split == 'train':
-                # dataset = load_dataset(data_args.data_path[split], split=split)
+                if data_args.sample_size > 0:
+                    dataset = load_from_disk(os.path.join(data_args.data_cache_dir, f'Belle_2M_CN_1w'))  # 1w
+                else:
+                    dataset = load_dataset(data_args.data_path[split], split=split)  # 1M
                 # if data_args.sample_size > 0:
                 #     # random挑选1w条数据
                 #     random.seed(REPRODUCIBILITY_SEED)
@@ -39,7 +48,7 @@ class MyDataset(Dataset):
                 #     sampled_indices = random.sample(possible_indices, data_args.sample_size)
                 #     dataset = dataset.select(sampled_indices)
                 #     dataset.save_to_disk(os.path.join(data_args.data_cache_dir, f'Belle_2M_CN_1w'))
-                dataset = load_from_disk(os.path.join(data_args.data_cache_dir, f'Belle_2M_CN_1w'))
+                # dataset = load_from_disk(os.path.join(data_args.data_cache_dir, f'Belle_2M_CN_1w'))
             else:
                 dataset = load_dataset('json', data_files=data_args.data_path[split], split='train')
 
@@ -47,6 +56,10 @@ class MyDataset(Dataset):
         else:
             print('Loading data from', save_file)
             self.data = torch.load(save_file)
+        # if split == 'train':
+        #     self.data = self.data[:100]
+        if split == 'eval':
+            self.data = self.data[:20]
         print('Data size:', len(self.data))
         print('Data format:', self.data[0])
         print('Max length:', max([len(d['input_ids']) for d in self.data]))
@@ -56,17 +69,11 @@ class MyDataset(Dataset):
         for instance in tqdm(dataset):
             # "Human: "+sample['instruction']+sample['input']+"\n Assistant: "+sample['output']
             if self.split == 'train':
-                source = f"Human: {instance['instruction']}\nAssistant: "
-                if self.data_args.special_tag is not None:
-                    target = f"{self.data_args.special_tag}{instance['output']}{self.tokenizer.eos_token}"
-                else:
-                    target = f"{instance['output']}{self.tokenizer.eos_token}"
+                source = user_prompt.format(instance['instruction'].strip())
+                target = f"{agent_prompt.format(instance['output'].strip())}{self.tokenizer.eos_token}"
             else:
-                if self.data_args.special_tag is not None:
-                    source = f"Human: {instance['question']}\nAssistant: {self.data_args.special_tag}"
-                else:
-                    source = f"Human: {instance['question']}\nAssistant: "
-                target = f"{instance['std_answer']}{self.tokenizer.eos_token}"
+                source = f"{user_prompt.format(instance['question'].strip())}我的回答是\n"
+                target = f"{instance['std_answer'].strip()}{self.tokenizer.eos_token}"
 
             example = source + target
             example_tokenized = self.tokenizer(example, truncation=True, max_length=self.data_args.max_length)
@@ -285,14 +292,17 @@ if __name__ == '__main__':
     parser = HfArgumentParser((ModelArguments, DataArguments))
     model_args, data_args = parser.parse_args_into_dataclasses()
     data_args.dataset_name = 'belle'
-    data_args.data_path = {'train': 'BelleGroup/train_1M_CN',
-                           'eval': 'data/belle/eval_set.json'}
+    data_args.data_path = {'train': 'BelleGroup/train_2M_CN',
+                           'eval': 'examples/belle/eval/eval_set.json'}
+    data_args.data_cache_dir = 'cache'
     data_args.refresh = True
     data_args.data_tag = 'base'
-    data_args.max_length = 512
+    data_args.train_on_inputs = True
+    data_args.max_length = 1024
+    data_args.sample_size = 10000
 
     tokenizer = LlamaTokenizer.from_pretrained(
-        model_args.model_name_or_path,
+        '../finetuneLLM/cache/llama-65b',
         cache_dir=model_args.cache_dir,
         use_fast=False,
         padding_side='left'
