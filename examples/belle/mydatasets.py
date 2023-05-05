@@ -54,7 +54,7 @@ class MyDataset(Dataset):
 
             self.data = self.process(dataset, save_file)
         else:
-            print('Loading data from', save_file)
+            print(f'Load data from {save_file}.')
             self.data = torch.load(save_file)
         # if split == 'train':
         #     self.data = self.data[:100]
@@ -100,7 +100,7 @@ class MyDataset(Dataset):
                              'class': instance['class']})
 
         torch.save(data, save_file)
-        print('Saving data to', save_file)
+        print(f'Save data to {save_file}.')
         return data
 
     def __len__(self):

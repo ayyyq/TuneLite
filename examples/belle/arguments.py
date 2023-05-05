@@ -6,7 +6,7 @@ from collie.arguments import CollieArguments
 @dataclass
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="llama-7B")
-    cache_dir: Optional[str] = field(default='../llama/checkpoint')
+    cache_dir: Optional[str] = field(default=None)
     # llama_dir: Optional[str] = field(default='/remote-home/klv/exps/MossOn3090/llama')
 
 

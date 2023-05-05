@@ -4,7 +4,7 @@ model_name_or_path: 'llama-65B'
 # data
 dataset_name: 'belle'
 data_path:
-  train: 'BelleGroup/train_2M_CN'
+  train: 'BelleGroup/train_1M_CN'
   eval: 'examples/belle/eval/eval_set.json'
   test: 'examples/belle/eval/eval_set.json'
 data_cache_dir: 'cache'
