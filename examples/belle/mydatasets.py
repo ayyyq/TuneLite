@@ -56,8 +56,8 @@ class MyDataset(Dataset):
         else:
             print(f'Load data from {save_file}.')
             self.data = torch.load(save_file)
-        # if split == 'train':
-        #     self.data = self.data[:100]
+        if split == 'train':
+            self.data = self.data[:5000]
         if split == 'eval':
             self.data = self.data[:20]
         print('Data size:', len(self.data))

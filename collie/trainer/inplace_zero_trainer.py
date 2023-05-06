@@ -1,8 +1,9 @@
-import os.path
+import os
 import sys
 import operator
 from collections import OrderedDict
 from itertools import chain
+from pathlib import Path
 
 import tqdm
 import numpy as np
@@ -99,6 +100,7 @@ class InplaceZeroTrainer:
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.grad is not None:
+                        torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.AVG, async_op=False)
                         if self.gather_norm:
                             self.grad_norms.append(torch.norm(p.grad, 2.0))
                             p.grad = None
@@ -138,6 +140,7 @@ class InplaceZeroTrainer:
             print(f"***** Running Training *****")
             print(f"  Num examples: {len(self.train_dataset)}")
             print(f"  Num Epochs: {self.collie_args.num_train_epochs}")
+            print(f"  Current Epoch: {epoch}")
             print(f"  Batch Size: {self.collie_args.per_device_train_batch_size}")
             if self.allow_print:
                 self.wandb.log({'train/epoch': epoch}, step=self.global_step)
@@ -265,6 +268,7 @@ class InplaceZeroTrainer:
                 """
         print(f"***** Running {eval_prefix} *****")
         print(f"  Num examples: {len(dataset)}")
+        print(f"  Current Epoch: {epoch}")
         print(f"  Batch size: {self.collie_args.per_device_eval_batch_size}")
 
         with tqdm.tqdm(dataloader, disable=not self.allow_print) as tqb:
@@ -304,7 +308,6 @@ class InplaceZeroTrainer:
             generation_config=generation_config
         )
         predictions = logits.detach().cpu().numpy()
-        predictions = np.where(predictions != -100, predictions, self.tokenizer.pad_token_id)
         pred_texts = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
         return pred_texts
 
@@ -407,6 +410,10 @@ class InplaceZeroTrainer:
         )
 
     def save_model(self, index):
+        checkpoint_dir = sorted(Path(self.collie_args.output_dir).glob("checkpoint-*"))
+        if len(checkpoint_dir) >= self.collie_args.save_total_limit:
+            os.rmdir(checkpoint_dir[0])
+
         output_dir = os.path.join(self.collie_args.output_dir, f"checkpoint-{index}")
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
