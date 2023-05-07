@@ -301,8 +301,12 @@ class InplaceZeroTrainer:
     def eval_step(self, batch):
         self.model.eval()
         generation_config = GenerationConfig(max_new_tokens=self.collie_args.max_new_tokens,
+                                             do_sample=self.collie_args.do_sample,
                                              temperature=self.collie_args.temperature,
-                                             top_p=self.collie_args.top_p)
+                                             top_k=self.collie_args.top_k,
+                                             top_p=self.collie_args.top_p,
+                                             typical_p=self.collie_args.typical_p,
+                                             repetition_penalty=self.collie_args.repetition_penalty,)
         logits = self.model.generate(
             inputs=batch['input_ids'].cuda(),
             generation_config=generation_config

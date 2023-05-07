@@ -30,10 +30,12 @@ class CollieArguments(Seq2SeqTrainingArguments):
     clip_loss_value: float = field(default=None, metadata={"help": "Maximum loss value (for token loss clipping)."})  # recommend 5.0
     warmup: float = field(default=0.0, metadata={"help": "The number of warmup steps (int) or the warmup ratio (float)."})
 
-    max_new_tokens: int = field(default=100, metadata={"help": "The maximum numbers of tokens to generate, ignoring the number of tokens in the prompt."})
+    max_new_tokens: int = field(default=None, metadata={"help": "The maximum numbers of tokens to generate, ignoring the number of tokens in the prompt."})
+    do_sample: bool = field(default=False, metadata={"help": " Whether or not to use sampling ; use greedy decoding otherwise."})
     temperature: float = field(default=1.0, metadata={"help": "The value used to modulate the next token probabilities."})
     top_k: int = field(default=50, metadata={"help": "The number of highest probability vocabulary tokens to keep for top-k-filtering."})
     top_p: float = field(default=1.0, metadata={"help": "If set to float < 1, only the smallest set of most probable tokens with probabilities that add up to top_p or higher are kept for generation."})
-    do_sample: bool = field(default=True, metadata={"help": " Whether or not to use sampling ; use greedy decoding otherwise."})
+    typical_p: float = field(default=1.0, metadata={
+        "help": "Local typicality measures how similar the conditional probability of predicting a target token next is to the expected conditional probability of predicting a random token next, given the partial text already generated. If set to float < 1, the smallest set of the most locally typical tokens with probabilities that add up to typical_p or higher are kept for generation."})
     repetition_penalty: float = field(default=1.0, metadata={"help": "The parameter for repetition penalty. 1.0 means no penalty. See this paper for more details."})
 
