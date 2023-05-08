@@ -4,6 +4,7 @@ import operator
 from collections import OrderedDict
 from itertools import chain
 from pathlib import Path
+import shutil
 
 import tqdm
 import numpy as np
@@ -416,7 +417,7 @@ class InplaceZeroTrainer:
     def save_model(self, index):
         checkpoint_dir = sorted(Path(self.collie_args.output_dir).glob("checkpoint-*"))
         if len(checkpoint_dir) >= self.collie_args.save_total_limit:
-            os.rmdir(checkpoint_dir[0])
+            shutil.rmtree(checkpoint_dir[0], ignore_errors=True)
 
         output_dir = os.path.join(self.collie_args.output_dir, f"checkpoint-{index}")
         if not os.path.exists(output_dir):
