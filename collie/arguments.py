@@ -25,6 +25,8 @@ class DataArguments:
 class CollieArguments(Seq2SeqTrainingArguments):
     tag: str = field(default=None, metadata={"help": "Tag for the experiment."})
 
+    group_by_cluster: bool = field(default=False)
+
     clip_grad_norm: float = field(default=None, metadata={"help": "Maximum gradient normalized value (for gradient clipping)."})  # recommend 1.0
     clip_grad_value: float = field(default=None, metadata={"help": "Maximum gradient value (for gradient clipping)."})
     clip_loss_value: float = field(default=None, metadata={"help": "Maximum loss value (for token loss clipping)."})  # recommend 5.0

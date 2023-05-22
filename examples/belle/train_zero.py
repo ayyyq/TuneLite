@@ -9,6 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from transformers import set_seed
 from dataclasses import asdict
 from transformers.deepspeed import HfDeepSpeedConfig
+import deepspeed
 import wandb
 # os.environ['WANDB_MODE'] = 'debug'
 
@@ -25,7 +26,7 @@ from collie.trainer import InplaceZeroTrainer
 
 def train():
     # ========== 1. logs and args ==========
-    torch.set_default_dtype(torch.float16)
+    torch.set_default_dtype(torch.float32)
     # torch.set_default_tensor_type(torch.cuda.BFloat16Tensor)
     parser = HfArgumentParser((ModelArguments, DataArguments, MyCollieArguments))
     if sys.argv[-1].endswith(".yaml"):
@@ -86,11 +87,13 @@ def train():
     config.gradient_checkpointing = collie_args.gradient_checkpointing
     if collie_args.resume_from_checkpoint is not None:
         print(f'Load checkpoint from {collie_args.resume_from_checkpoint}.')
+    # with deepspeed.zero.Init(dtype=torch.float16):
     model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path if collie_args.resume_from_checkpoint is None else collie_args.resume_from_checkpoint,
         cache_dir=model_args.cache_dir,
         # local_files_only=True,
         config=config,
+        torch_dtype=torch.float32,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(

@@ -571,7 +571,7 @@ def load_model(
     tokenizer = Tokenizer(model_path=tokenizer_path)
 
     model_args.vocab_size = tokenizer.n_words
-    torch.set_default_tensor_type(torch.cuda.BFloat16Tensor)
+    torch.set_default_tensor_type(torch.cuda.BFloat16Tensor)  # TODO: float32
     #torch.set_default_tensor_type(torch.cuda.HalfTensor)
     model = Transformer(model_args)
     torch.set_default_tensor_type(torch.cuda.FloatTensor)

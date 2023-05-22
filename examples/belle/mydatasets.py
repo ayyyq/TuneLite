@@ -12,6 +12,8 @@ from fastNLP import print
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import PaddingStrategy
 from typing import Any, Optional, Union, Callable
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
 
 
 IGNORE_INDEX = -100
@@ -52,19 +54,39 @@ class MyDataset(Dataset):
             else:
                 dataset = load_dataset('json', data_files=data_args.data_path[split], split='train')
 
-            self.data = self.process(dataset, save_file)
+            self.data = self.process(dataset)
+            # if split == 'train':
+                # self.data = self.data[:100]
+                # self.cluster()
+            torch.save(self.data, save_file)
+            print(f'Save data to {save_file}.')
         else:
             print(f'Load data from {save_file}.')
             self.data = torch.load(save_file)
-        # if split == 'train':
-        #     self.data = self.data[:5000]
+
         if split == 'eval':
             self.data = self.data[:20]
         print('Data size:', len(self.data))
         print('Data format:', self.data[0])
         print('Max length:', max([len(d['input_ids']) for d in self.data]))
 
-    def process(self, dataset, save_file):
+    def cluster(self):
+        embedder = SentenceTransformer('all-MiniLM-L6-v2')
+
+        # Compute embeddings
+        corpus = [ins['question'] for ins in self.data]
+        embeddings = embedder.encode(corpus, show_progress_bar=True)
+
+        # Perform kmean clustering
+        num_clusters = 5
+        clustering_model = KMeans(n_clusters=num_clusters)
+        clustering_model.fit(embeddings)
+        cluster_assignment = clustering_model.labels_
+
+        for sentence_id, cluster_id in enumerate(cluster_assignment):
+            self.data[sentence_id]['cluster_id'] = cluster_id
+
+    def process(self, dataset):
         data = []
         for instance in tqdm(dataset):
             # "Human: "+sample['instruction']+sample['input']+"\n Assistant: "+sample['output']
@@ -88,7 +110,9 @@ class MyDataset(Dataset):
                 data.append({'input_ids': input_ids,
                              'labels': labels,
                              'source': source,
-                             'target': target})
+                             'target': target,
+                             'question': instance['instruction'].strip(),
+                             'cluster_id': 0})
             else:
                 input_ids = source_tokenized['input_ids']
                 labels = copy.deepcopy(input_ids)
@@ -97,10 +121,9 @@ class MyDataset(Dataset):
                              'source': source,
                              'question': instance['question'],
                              'std_answer': instance['std_answer'],
-                             'class': instance['class']})
+                             'class': instance['class'],
+                             'cluster_id': 0})
 
-        torch.save(data, save_file)
-        print(f'Save data to {save_file}.')
         return data
 
     def __len__(self):
@@ -109,7 +132,8 @@ class MyDataset(Dataset):
     def __getitem__(self, idx):
         return {
             'input_ids': self.data[idx]['input_ids'],
-            'labels': self.data[idx]['labels']
+            'labels': self.data[idx]['labels'],
+            'cluster_id': self.data[idx]['cluster_id']
         }
 
 
@@ -288,6 +312,7 @@ class EvalDataCollatorForCauselLM:
 if __name__ == '__main__':
     from transformers import HfArgumentParser, LlamaTokenizer
     from arguments import ModelArguments, DataArguments
+    from transformers.trainer_pt_utils import DistributedLengthGroupedSampler, LengthGroupedSampler
 
     parser = HfArgumentParser((ModelArguments, DataArguments))
     model_args, data_args = parser.parse_args_into_dataclasses()
@@ -296,18 +321,27 @@ if __name__ == '__main__':
                            'eval': 'examples/belle/eval/eval_set.json'}
     data_args.data_cache_dir = 'cache'
     data_args.refresh = True
-    data_args.data_tag = 'base'
+    data_args.data_tag = 'cluster'
     data_args.train_on_inputs = True
     data_args.max_length = 1024
     data_args.sample_size = 10000
 
     tokenizer = LlamaTokenizer.from_pretrained(
-        '../finetuneLLM/cache/llama-65b',
+        'cache/llama-65b',
         cache_dir=model_args.cache_dir,
         use_fast=False,
         padding_side='left'
     )
     tokenizer.pad_token_id = 0
 
-    # train_dataset = MyDataset(data_args, tokenizer, split='train')
-    eval_dataset = MyDataset(data_args, tokenizer, split='eval')
+    train_dataset = MyDataset(data_args, tokenizer, split='train')
+    # eval_dataset = MyDataset(data_args, tokenizer, split='eval')
+
+    # sampler = LengthGroupedSampler(
+    #     2,
+    #     dataset=train_dataset,
+    #     lengths=None,
+    #     model_input_name="cluster_id",
+    #     generator=torch.Generator(),
+    # )
+    # iter(sampler)

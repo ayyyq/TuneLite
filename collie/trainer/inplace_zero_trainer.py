@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import math
 import operator
 from collections import OrderedDict
 from itertools import chain
@@ -10,10 +12,11 @@ import tqdm
 import numpy as np
 import torch
 from torch.nn import CrossEntropyLoss
-from torch.utils.data import DistributedSampler, DataLoader
+from torch.utils.data import DistributedSampler, DataLoader, Dataset
 from transformers.trainer_pt_utils import DistributedLengthGroupedSampler, SequentialDistributedSampler
 from transformers.trainer_utils import has_length, seed_worker
 from transformers import GenerationConfig
+from typing import Optional
 
 try:
     import deepspeed
@@ -346,6 +349,14 @@ class InplaceZeroTrainer:
                 model_input_name="input_ids",
                 seed=seed,
             )
+        elif self.collie_args.group_by_cluster:
+            return DistributedBucketSampler(
+                self.train_dataset,
+                batch_size=self.collie_args.per_device_train_batch_size * self.collie_args.gradient_accumulation_steps * self.collie_args.world_size,
+                num_replicas=self.collie_args.world_size,
+                rank=self.collie_args.local_rank,
+                seed=seed
+            )
         else:
             return DistributedSampler(
                 self.train_dataset,
@@ -415,9 +426,11 @@ class InplaceZeroTrainer:
         )
 
     def save_model(self, index):
-        checkpoint_dir = sorted(Path(self.collie_args.output_dir).glob("checkpoint-*"))
-        if len(checkpoint_dir) >= self.collie_args.save_total_limit:
-            shutil.rmtree(checkpoint_dir[0], ignore_errors=True)
+        if self.collie_args.local_rank == 0:
+            checkpoint_dir = sorted(Path(self.collie_args.output_dir).glob("checkpoint-*"))
+            if len(checkpoint_dir) >= self.collie_args.save_total_limit:
+                shutil.rmtree(checkpoint_dir[0], ignore_errors=True)
+        torch.distributed.barrier()
 
         output_dir = os.path.join(self.collie_args.output_dir, f"checkpoint-{index}")
         if not os.path.exists(output_dir):
@@ -467,3 +480,91 @@ class InplaceZeroTrainer:
                 torch.save(state_dict, f)
                 print(f"Save model to {output_dir}.")
         torch.distributed.barrier()
+
+
+class DistributedBucketSampler(DistributedSampler):
+    def __init__(self, dataset: Dataset, batch_size: int, num_replicas: Optional[int] = None,
+                 rank: Optional[int] = None, shuffle: bool = True,
+                 seed: int = 0, drop_last: bool = False) -> None:
+        super().__init__(dataset, num_replicas=num_replicas, rank=rank, shuffle=shuffle, seed=seed, drop_last=drop_last)
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            rank = dist.get_rank()
+        if rank >= num_replicas or rank < 0:
+            raise ValueError(
+                "Invalid rank {}, rank should be in the interval"
+                " [0, {}]".format(rank, num_replicas - 1))
+        self.dataset = dataset
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        self.drop_last = drop_last
+        # If the dataset length is evenly divisible by # of replicas, then there
+        # is no need to drop any data, since the dataset will be split equally.
+        if self.drop_last and len(self.dataset) % self.num_replicas != 0:  # type: ignore[arg-type]
+            # Split to nearest available length that is evenly divisible.
+            # This is to ensure each rank receives the same amount of data when
+            # using this Sampler.
+            self.num_samples = math.ceil(
+                (len(self.dataset) - self.num_replicas) / self.num_replicas  # type: ignore[arg-type]
+            )
+        else:
+            self.num_samples = math.ceil(len(self.dataset) / self.num_replicas)  # type: ignore[arg-type]
+        self.total_size = self.num_samples * self.num_replicas
+        self.shuffle = shuffle
+        self.seed = seed
+
+        self.batch_size = batch_size  # per_device_train_batch_size * num_devices
+        self.grouped_dataset = {}
+        for i, ins in enumerate(self.dataset):
+            if ins['cluster_id'] not in self.grouped_dataset:
+                self.grouped_dataset[ins['cluster_id']] = []
+            self.grouped_dataset[ins['cluster_id']].append(i)
+
+    def __iter__(self):
+        if self.shuffle:
+            # deterministically shuffle based on epoch and seed
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+
+            grouped_indices = []
+            # 首先每个group内部shuffle
+            for dataset in self.grouped_dataset.values():
+                # dataset is a list of indices
+                indices_indices = torch.randperm(len(dataset), generator=g).tolist()  # type: ignore[arg-type]
+                indices = [dataset[i] for i in indices_indices]
+
+                if self.drop_last and len(dataset) % self.batch_size != 0:
+                    num_samples = math.ceil((len(dataset) - self.batch_size) / self.batch_size)
+                else:
+                    num_samples = math.ceil(len(dataset) / self.batch_size)
+                total_size = num_samples * self.batch_size
+
+                if not self.drop_last:
+                    # add extra samples to make it evenly divisible
+                    indices += indices[:(total_size - len(indices))]
+                else:
+                    # remove tail of data to make it evenly divisible.
+                    indices = indices[:total_size]
+                assert len(indices) == total_size
+
+                # chunk into batches
+                for i in range(0, len(indices), self.batch_size):
+                    grouped_indices.append(indices[i:i+self.batch_size])
+
+            shuffle_indices = torch.randperm(len(grouped_indices), generator=g).tolist()  # type: ignore[arg-type]
+            indices = []
+            for i in shuffle_indices:
+                indices += grouped_indices[i]
+        else:
+            indices = list(range(len(self.dataset)))  # type: ignore[arg-type]
+
+        # subsample
+        indices = indices[self.rank:self.total_size:self.num_replicas]
+
+        return iter(indices)
