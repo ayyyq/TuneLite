@@ -1,0 +1,62 @@
+# model
+#model_name_or_path: '/home/ubuntu/projects/collie/cache/llama-65b'
+model_name_or_path: 'decapoda-research/llama-7b-hf'
+cache_dir: '/home/klv/exps/cache'
+# data
+dataset_name: 'belle'
+data_path:
+  train: 'BelleGroup/train_1M_CN'
+  eval: 'examples/belle/eval/eval_set.json'
+  test: 'examples/belle/eval/eval_set.json'
+#data_cache_dir: '/home/ubuntu/projects/collie/cache'
+data_cache_dir: 'cache'
+refresh: true
+data_tag: 'chinese'
+train_on_inputs: true
+max_length: 1024
+sample_size: 10000
+# collie
+# trainer
+tag: 'amp-zero-sft-1w-bs8'
+output_dir: 'outputs'
+overwrite_output_dir: true
+deepspeed: 'examples/belle/ds_config.json'
+do_train: true
+do_eval: true
+do_predict: true
+evaluation_strategy: 'epoch'
+#eval_steps: 500
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+learning_rate: 0.01
+weight_decay: 0
+num_train_epochs: 10
+lr_scheduler_type: 'constant'
+warmup: 0
+clip_grad_norm: 1.0
+#clip_grad_value: 1.0
+#clip_loss_value: 5.0
+log_level: 'info'
+logging_steps: 1
+save_strategy: 'epoch'
+#save_steps: 2000
+save_total_limit: 3
+seed: 42
+#fp16: true
+remove_unused_columns: false
+load_best_model_at_end: false
+metric_for_best_model: 'score'
+optim: 'sgd'
+#group_by_length: true
+#group_by_cluster: true
+report_to: 'wandb'
+dataloader_pin_memory: false
+gradient_checkpointing: true
+#generate
+predict_with_generate: true
+max_new_tokens: 1024
+do_sample: true
+temperature: 0.001
+top_k: 30
+top_p: 0.85
+repetition_penalty: 1.2

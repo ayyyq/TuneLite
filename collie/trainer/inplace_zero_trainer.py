@@ -94,28 +94,44 @@ class InplaceZeroTrainer:
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.grad is not None:
-                        one_dim_grad = p.grad.view(-1)
-                        partition_size = p.ds_tensor.numel()
-                        start = partition_size * self.collie_args.local_rank
-                        end = start + partition_size
-
-                        if end > p.grad.numel():
-                            partitioned_grad = one_dim_grad.narrow(0, start, p.grad.numel() - start)
-                            # partitioned_grad = torch.cat([partitioned_grad, torch.zeros(end - p.grad.numel()).cuda()])
-                            partitioned_p = p.ds_tensor.narrow(0, 0, p.grad.numel() - start)
-                            if self.collie_args.clip_grad_value is not None:
-                                # Gradients are modified in-place.
-                                partitioned_grad.clamp_(min=-self.collie_args.clip_grad_value,
-                                                        max=self.collie_args.clip_grad_value)
-                            partitioned_p -= (self.lr * partitioned_grad)
+                        torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.AVG, async_op=False)
+                        if self.gather_norm:
+                            grad_fp32 = p.grad.detach().clone().to(torch.float32)
+                            self.grad_norms.append(torch.norm(grad_fp32, 2.0))
+                            p.grad = None
                         else:
-                            partitioned_grad = one_dim_grad.narrow(0, start, partition_size)
-                            if self.collie_args.clip_grad_value is not None:
-                                # Gradients are modified in-place.
-                                partitioned_grad.clamp_(min=-self.collie_args.clip_grad_value,
-                                                        max=self.collie_args.clip_grad_value)
-                            p.ds_tensor -= (self.lr * partitioned_grad)
-                        p.grad = None
+                            one_dim_grad = p.grad.view(-1)
+                            partition_size = p.ds_tensor.numel()
+                            start = partition_size * self.collie_args.local_rank
+                            end = start + partition_size
+
+                            if end > p.grad.numel():
+                                partitioned_grad = one_dim_grad.narrow(0, start, p.grad.numel() - start)
+                                # partitioned_grad = torch.cat([partitioned_grad, torch.zeros(end - p.grad.numel()).cuda()])
+                                partitioned_p = p.ds_tensor.narrow(0, 0, p.grad.numel() - start)
+                                partitioned_grad_fp32 = partitioned_grad.detach().clone().to(torch.float32)
+                                partitioned_p_fp32 = partitioned_p.detach().clone().to(torch.float32)
+                                if self.collie_args.clip_grad_value is not None:
+                                    # Gradients are modified in-place.
+                                    partitioned_grad_fp32.clamp_(min=-self.collie_args.clip_grad_value,
+                                                            max=self.collie_args.clip_grad_value)
+                                if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0 and self.clip_coef is not None:
+                                    partitioned_grad_fp32.mul_(self.clip_coef)
+                                partitioned_p_fp32 -= (self.lr * partitioned_grad_fp32)
+                                partitioned_p.copy_(partitioned_p_fp32)
+                            else:
+                                partitioned_grad = one_dim_grad.narrow(0, start, partition_size)
+                                partitioned_grad_fp32 = partitioned_grad.detach().clone().to(torch.float32)
+                                if self.collie_args.clip_grad_value is not None:
+                                    # Gradients are modified in-place.
+                                    partitioned_grad_fp32.clamp_(min=-self.collie_args.clip_grad_value,
+                                                            max=self.collie_args.clip_grad_value)
+                                if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0 and self.clip_coef is not None:
+                                    partitioned_grad_fp32.mul_(self.clip_coef)
+                                ds_tensor_fp32 = p.ds_tensor.detach().clone().to(torch.float32)
+                                ds_tensor_fp32 -= (self.lr * partitioned_grad_fp32)
+                                p.ds_tensor.copy_(ds_tensor_fp32)
+                            p.grad = None
             return x
 
         return func
