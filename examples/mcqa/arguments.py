@@ -28,3 +28,15 @@ class DataArguments:
 class MyCollieArguments(CollieArguments):
     length_normalization: bool = field(default=True, metadata={"help": "Whether to normalize the loss by the length of the input."})
     unconditional_normalization: bool = field(default=False, metadata={"help": "Whether to normalize the loss by the length of the input."})
+
+    hf_learning_rate: float = field(default=5e-4, metadata={"help": "The learning rate for the HF optimizer."})
+    hf_weight_decay: float = field(default=0.0, metadata={"help": "The weight decay for the HF optimizer."})
+    hf_lr_scheduler_type: str = field(default='linear', metadata={"help": "The lr scheduler type for the HF optimizer."})
+    hf_warmup: int = field(default=0, metadata={"help": "The warmup steps for the HF optimizer."})
+
+    # lora hyperparams
+    peft_type: str = field(default=None, metadata={
+        "help": "The type of PEFT, including [lora, prefix-tuning, prompt-tuning, p-tuning]."})
+    lora_r: int = field(default=8, metadata={"help": "Lora attention dimension."})
+    lora_alpha: int = field(default=16, metadata={"help": "The alpha parameter for Lora scaling."})
+    lora_dropout: float = field(default=0.05, metadata={"help": "The dropout probability for Lora layers."})

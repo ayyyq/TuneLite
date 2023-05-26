@@ -13,6 +13,7 @@ from torch.utils.data import DistributedSampler, DataLoader
 from transformers.trainer_pt_utils import DistributedLengthGroupedSampler, SequentialDistributedSampler
 from transformers.trainer_utils import has_length, seed_worker
 from transformers import GenerationConfig
+from transformers.optimization import AdamW, get_scheduler
 
 try:
     import deepspeed
@@ -35,6 +36,7 @@ class InplaceZeroTrainer:
             eval_dataset,
             tokenizer,
             compute_metrics,
+            optimizers=None,
     ):
         self.collie_args = collie_args
         self.train_dataset = train_dataset
@@ -45,16 +47,6 @@ class InplaceZeroTrainer:
         if self.collie_args.do_eval:
             self.metrics = {}
             self.compute_metrics = compute_metrics
-
-        if 'deepspeed' not in sys.modules:
-            raise ModuleNotFoundError(
-                "Detected DeepSpeed is not installed. See https://github.com/microsoft/DeepSpeed")
-
-        # Initialize deepspeed engine
-        self.model, _, _, _ = deepspeed.initialize(
-            config=collie_args.deepspeed,
-            model=model,
-        )
 
         # get train_dataloader and eval_dataloader
         if isinstance(data_collator, dict):
@@ -82,14 +74,30 @@ class InplaceZeroTrainer:
                                                   schedule=self.collie_args.lr_scheduler_type,
                                                   n_steps=self.n_steps)
         self.lr = 0
-        # for grad norm
-        self.gather_norm = False
-        self.grad_norms = []
-        self.clip_coef = None
+
+        hf_optimizer = AdamW(optimizers['model_parameters'], lr=collie_args.hf_learning_rate, weight_decay=collie_args.hf_weight_decay)
+        hf_lr_scheduler = get_scheduler(collie_args.hf_lr_scheduler_type,
+                                        optimizer=hf_optimizer,
+                                        num_warmup_steps=collie_args.hf_warmup * self.n_steps if collie_args.hf_warmup < 1 else collie_args.hf_warmup,
+                                        num_training_steps=self.n_steps)
+
+        if 'deepspeed' not in sys.modules:
+            raise ModuleNotFoundError(
+                "Detected DeepSpeed is not installed. See https://github.com/microsoft/DeepSpeed")
+
+        # Initialize deepspeed engine
+        self.model, self.peft_optimizer, _, self.peft_lr_scheduler = deepspeed.initialize(
+            config=collie_args.deepspeed,
+            model=model,
+            model_parameters=optimizers['model_parameters'],
+            optimizer=hf_optimizer,
+            lr_scheduler=hf_lr_scheduler
+        )
+
         # register inplace grad hook
         self.grad_func = self.inplace_grad()
         for n, p in model.named_parameters():
-            if p.requires_grad:
+            if "lora_" not in n and p.requires_grad:
                 p.register_hook(self.grad_func)
 
         get_accelerator().empty_cache()
@@ -99,6 +107,9 @@ class InplaceZeroTrainer:
         def func(x):
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
+                    if "lora_" in n:
+                        continue
+
                     if p.grad is not None:
                         torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.AVG, async_op=False)
                         if self.gather_norm:
@@ -151,7 +162,6 @@ class InplaceZeroTrainer:
             print(f"  Batch Size: {self.collie_args.per_device_train_batch_size}")
             if self.allow_print:
                 self.wandb.log({'train/epoch': epoch}, step=self.global_step)
-            self.train_dataloader.sampler.set_epoch(epoch)
 
             with tqdm.tqdm(self.train_dataloader, disable=not self.allow_print) as tqb:
                 for step, batch in enumerate(tqb, start=1):
@@ -174,6 +184,11 @@ class InplaceZeroTrainer:
                         loss_fct = CrossEntropyLoss()
                         loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
                                         shift_labels.view(-1).cuda())
+
+                    # update peft params
+                    loss = self.model.backward(loss)
+                    self.grad_func(0)
+                    self.model.step()  # Optimizer step for deepspeed must be called on every step regardless of the value of gradient_accumulation_steps
 
                     # update the learning rate
                     self.global_step = self.num_steps_per_epoch * epoch + step
@@ -221,10 +236,10 @@ class InplaceZeroTrainer:
                             loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
                                             shift_labels.view(-1).cuda())
 
-                    loss.backward()
+                    # loss.backward()
                     # update the last one since the hook function will not be called for the last parameter
-                    self.grad_func(0)
-                    self.model.optimizer.get_param_coordinator(training=True).reset_step()
+                    # self.grad_func(0)
+                    # self.model.optimizer.get_param_coordinator(training=True).reset_step()
 
                     tqb.set_postfix({'loss': loss.item()})
                     if self.allow_print:
