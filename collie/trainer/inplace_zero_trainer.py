@@ -1,15 +1,18 @@
-import os.path
+import os
 import sys
 import operator
 from collections import OrderedDict
 from itertools import chain
+from pathlib import Path
 
 import tqdm
+import numpy as np
 import torch
 from torch.nn import CrossEntropyLoss
 from torch.utils.data import DistributedSampler, DataLoader
 from transformers.trainer_pt_utils import DistributedLengthGroupedSampler, SequentialDistributedSampler
 from transformers.trainer_utils import has_length, seed_worker
+from transformers import GenerationConfig
 
 try:
     import deepspeed
@@ -79,7 +82,10 @@ class InplaceZeroTrainer:
                                                   schedule=self.collie_args.lr_scheduler_type,
                                                   n_steps=self.n_steps)
         self.lr = 0
-
+        # for grad norm
+        self.gather_norm = False
+        self.grad_norms = []
+        self.clip_coef = None
         # register inplace grad hook
         self.grad_func = self.inplace_grad()
         for n, p in model.named_parameters():
@@ -141,6 +147,7 @@ class InplaceZeroTrainer:
             print(f"***** Running Training *****")
             print(f"  Num examples: {len(self.train_dataset)}")
             print(f"  Num Epochs: {self.collie_args.num_train_epochs}")
+            print(f"  Current Epoch: {epoch}")
             print(f"  Batch Size: {self.collie_args.per_device_train_batch_size}")
             if self.allow_print:
                 self.wandb.log({'train/epoch': epoch}, step=self.global_step)
@@ -170,8 +177,50 @@ class InplaceZeroTrainer:
                     # update the learning rate
                     self.global_step = self.num_steps_per_epoch * epoch + step
                     self.lr = self.lr_scheduler.step(self.global_step)
-                    loss.backward()
+                    if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0:
+                        self.gather_norm = True
+                        self.grad_norms = []
 
+                        loss.backward(retain_graph=True)
+                        # update the last one since the hook function will not be called for the last parameter
+                        self.grad_func(0)
+
+                        with torch.no_grad():
+                            # The norm is computed over all gradients together, as if they were
+                            # concatenated into a single vector. Gradients are modified in-place.
+                            self.grad_norms = torch.stack(self.grad_norms)
+                            device = torch.device(f"cuda:{self.collie_args.local_rank}")
+                            all_grad_norms = torch.zeros(self.collie_args.world_size * self.grad_norms.shape[0], dtype=self.grad_norms.dtype, device=device)
+                            torch.distributed.all_gather_into_tensor(all_grad_norms, self.grad_norms)
+
+                            total_norm = torch.norm(all_grad_norms, 2.0)
+                            self.clip_coef = float(self.collie_args.clip_grad_norm) / (total_norm + 1e-6)
+                            self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
+                        self.gather_norm = False
+
+                        self.model.optimizer.get_param_coordinator(training=True).reset_step()
+                        # 第二次forward
+                        outs = self.model(
+                            input_ids=batch['input_ids'].cuda(),
+                            attention_mask=batch['attention_mask'].cuda(),
+                        )
+                        # Shift so that tokens < n predict n
+                        shift_logits = outs.logits[..., :-1, :].contiguous()
+                        shift_labels = batch['labels'][:, 1:].contiguous()
+                        # Flatten the tokens
+                        if self.collie_args.clip_loss_value is not None:
+                            loss_fct = CrossEntropyLoss(reduction='none')
+                            loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
+                                            shift_labels.view(-1).cuda())
+                            loss.data.clamp_(min=-self.collie_args.clip_loss_value,
+                                             max=self.collie_args.clip_loss_value)
+                            loss = loss.mean()
+                        else:
+                            loss_fct = CrossEntropyLoss()
+                            loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
+                                            shift_labels.view(-1).cuda())
+
+                    loss.backward()
                     # update the last one since the hook function will not be called for the last parameter
                     self.grad_func(0)
                     self.model.optimizer.get_param_coordinator(training=True).reset_step()
@@ -187,6 +236,9 @@ class InplaceZeroTrainer:
                             step=self.global_step
                         )
 
+                    if self.collie_args.save_strategy == 'steps' and self.global_step % self.collie_args.save_steps == 0:
+                        self.save_model(self.global_step)
+
                     if self.collie_args.do_eval and self.collie_args.evaluation_strategy == 'steps' and \
                             self.global_step % self.collie_args.eval_steps == 0:
                         if isinstance(self.eval_dataset, dict):
@@ -196,6 +248,9 @@ class InplaceZeroTrainer:
                                           self.eval_dataloader[prefix], prefix)
                         else:
                             self.eval(self.global_step, epoch, self.eval_dataset, self.eval_dataloader, 'eval')
+
+            if self.collie_args.save_strategy == 'epoch':
+                self.save_model(epoch)
 
             if self.collie_args.do_eval and self.collie_args.evaluation_strategy == 'epoch':
                 if isinstance(self.eval_dataset, dict):
@@ -220,6 +275,7 @@ class InplaceZeroTrainer:
                 """
         print(f"***** Running {eval_prefix} *****")
         print(f"  Num examples: {len(dataset)}")
+        print(f"  Current Epoch: {epoch}")
         print(f"  Batch size: {self.collie_args.per_device_eval_batch_size}")
 
         with tqdm.tqdm(dataloader, disable=not self.allow_print) as tqb:
@@ -234,7 +290,7 @@ class InplaceZeroTrainer:
             torch.distributed.all_gather_object(all_preds_gather, all_preds)
             all_pred_merged = list(chain(*all_preds_gather))
 
-            result = self.compute_metrics(all_pred_merged, dataset)
+            result = self.compute_metrics(all_pred_merged, dataset, eval_prefix)
             result = {f"{eval_prefix}/{k}": v for k, v in result.items()}
             prefix_metric_for_best_model = f'{eval_prefix}/{self.collie_args.metric_for_best_model}'
             result_value = result[prefix_metric_for_best_model]
@@ -251,15 +307,15 @@ class InplaceZeroTrainer:
 
     def eval_step(self, batch):
         self.model.eval()
+        generation_config = GenerationConfig(max_new_tokens=self.collie_args.max_new_tokens,
+                                             temperature=self.collie_args.temperature,
+                                             top_p=self.collie_args.top_p)
         logits = self.model.generate(
-            batch['input_ids'].cuda(),
-            batch['attention_mask'].cuda(),
-            max_new_tokens=self.collie_args.max_new_tokens,
-            temperature=self.collie_args.temperature,
-            top_p=self.collie_args.top_p
+            inputs=batch['input_ids'].cuda(),
+            generation_config=generation_config
         )
-        logits = logits.tolist()
-        pred_texts = self.tokenizer.batch_decode(logits)
+        predictions = logits.detach().cpu().numpy()
+        pred_texts = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
         return pred_texts
 
     def is_better(self, result_dict, key):
@@ -360,15 +416,21 @@ class InplaceZeroTrainer:
             pin_memory=self.collie_args.dataloader_pin_memory,
         )
 
-    def save_model(self):
+    def save_model(self, index):
+        checkpoint_dir = sorted(Path(self.collie_args.output_dir).glob("checkpoint-*"))
+        if len(checkpoint_dir) >= self.collie_args.save_total_limit:
+            os.rmdir(checkpoint_dir[0])
+
+        output_dir = os.path.join(self.collie_args.output_dir, f"checkpoint-{index}")
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
         state_dict = OrderedDict()
-        output_dir = self.collie_args.output_dir
         for n, p in self.model.module.named_parameters():
             state_dict[n] = (p.ds_tensor.detach().cpu(), p.ds_numel, p.ds_shape)
-        os.makedirs(output_dir, exist_ok=True)
         # save model shards
-        with open(os.path.join(output_dir, f'pytorch_model-{self.collie_args.local_rank}.bin'), 'wb') as f:
-            torch.save(state_dict, f)
+        if self.collie_args.local_rank != 0:
+            with open(os.path.join(output_dir, f'pytorch_model-{self.collie_args.local_rank}.bin'), 'wb') as f:
+                torch.save(state_dict, f)
         torch.distributed.barrier()
         # merge model shards
         if self.collie_args.local_rank == 0:
@@ -378,13 +440,11 @@ class InplaceZeroTrainer:
                 with open(os.path.join(output_dir, f'pytorch_model-{rank}.bin'), 'rb') as f:
                     state_dict_rank = torch.load(f)
                     for n in state_dict_rank:
-                        print(n, state_dict[n][0].shape)
                         state_dict[n] = (
                             torch.cat([state_dict[n][0], state_dict_rank[n][0]], dim=0),
                             state_dict[n][1],
                             state_dict[n][2]
                         )
-                        print(n, state_dict[n][0].shape)
                 # remove shard files
                 os.remove(os.path.join(output_dir, f'pytorch_model-{rank}.bin'))
             # reshape to original shape
@@ -399,10 +459,11 @@ class InplaceZeroTrainer:
                 head_dim = self.model.module.config.hidden_size // self.model.module.config.num_attention_heads
                 base = 10000.0
                 inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
-                for layer in num_layers:
+                for layer in range(num_layers):
                     state_dict[f'model.layers.{layer}.self_attn.rotary_emb.inv_freq'] = inv_freq
 
 
             with open(os.path.join(output_dir, f'pytorch_model.bin'), 'wb') as f:
                 torch.save(state_dict, f)
+                print(f"Save model to {output_dir}.")
         torch.distributed.barrier()

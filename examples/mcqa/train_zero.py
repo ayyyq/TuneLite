@@ -24,9 +24,12 @@ from mytrainer import MyInplaceZeroTrainer
 from utils import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
 
 
-def compute_metrics(all_pred, eval_dataset):
-    preds = all_pred
+def compute_metrics(all_pred, eval_dataset, eval_prefix=None):
     golds = [ins['answer'] for ins in eval_dataset.data]
+    preds = all_pred[:len(golds)]
+    print(len(all_pred))
+    print(all_pred[:8])
+    print(all_pred[-8:])
     assert len(preds) == len(golds), f"# of predictions {len(preds)} doesn't match # of references {len(golds)}."
 
     acc = round(sum([int(pred == gold) for pred, gold in zip(preds, golds)]) / len(golds), 6)
@@ -36,7 +39,7 @@ def compute_metrics(all_pred, eval_dataset):
 
 def train():
     # ========== 1. logs and args ==========
-    torch.set_default_dtype(torch.bfloat16)
+    torch.set_default_dtype(torch.float16)
     # torch.set_default_tensor_type(torch.cuda.BFloat16Tensor)
     parser = HfArgumentParser((ModelArguments, DataArguments, MyCollieArguments))
     if sys.argv[-1].endswith(".yaml"):
