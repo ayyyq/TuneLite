@@ -1,7 +1,9 @@
 # model
 model_name_or_path: '/remote-home/share/llama_hf/7B'
 # data
-dataset_name: 'openbookqa'
+#dataset_name: 'openbookqa'
+#dataset_name: 'ARC-Challenge'
+dataset_name: 'ARC-Easy'
 refresh: false
 data_tag: 'src'
 max_length: 256
@@ -14,14 +16,14 @@ deepspeed: 'ds_config.json'
 do_train: true
 do_eval: false
 evaluation_strategy: 'epoch'
-per_device_train_batch_size: 4
+per_device_train_batch_size: 16
 per_device_eval_batch_size: 8
 learning_rate: 0.02
 weight_decay: 0
 num_train_epochs: 10
 lr_scheduler_type: 'constant'
 warmup: 0.05
-clip_grad_value: 1.0
+clip_grad_norm: 1.0
 #clip_loss_value: 5.0
 log_level: 'info'
 logging_steps: 1

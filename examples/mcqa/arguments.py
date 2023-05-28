@@ -40,3 +40,4 @@ class MyCollieArguments(CollieArguments):
     lora_r: int = field(default=8, metadata={"help": "Lora attention dimension."})
     lora_alpha: int = field(default=16, metadata={"help": "The alpha parameter for Lora scaling."})
     lora_dropout: float = field(default=0.05, metadata={"help": "The dropout probability for Lora layers."})
+    lora_only: bool = field(default=False, metadata={"help": "Whether to use LoRA without inplace SGD"})

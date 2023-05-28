@@ -21,7 +21,7 @@ sys.path.append(python_path)
 from collie.log import print
 from arguments import ModelArguments, DataArguments, MyCollieArguments
 from mydatasets import MyDataset, get_dataset_info
-from mytrainer import MyInplaceZeroTrainer
+from mytrainer_lora import MyInplaceZeroTrainer
 from utils import DataCollatorForCauselLM, EvalDataCollatorForCauselLM
 
 
@@ -106,7 +106,8 @@ def train():
             peft_config = LoraConfig(
                 r=collie_args.lora_r,
                 lora_alpha=collie_args.lora_alpha,
-                target_modules=["q_proj", "v_proj"],
+                # target_modules=["q_proj", "v_proj"],
+                target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],
                 lora_dropout=collie_args.lora_dropout,
                 bias="none",
                 task_type=TaskType.CAUSAL_LM
@@ -118,15 +119,21 @@ def train():
         model.print_trainable_parameters()
 
         # unfreeze base model
+        # 包完peft之后的参数名字：base_model.model.model.layers.23.self_attn.v_proj.weight
+        # 之前的参数的名字：model.layers.23.self_attn.v_proj.weight
         for name, param in model.named_parameters():
-            if name in non_peft_names:
-                param.requires_grad = True
+            if name.split('base_model.model.')[1] in non_peft_names:
+                if not collie_args.lora_only:
+                    param.requires_grad = True
             if "lora_" in name:
                 peft_params.append(param)
 
     torch.cuda.empty_cache()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        use_fast=False
+    )
     tokenizer.pad_token_id = 0
 
     # ========== 3. Preprocessing the datasets. ==========

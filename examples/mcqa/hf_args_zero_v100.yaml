@@ -1,8 +1,12 @@
 # model
 model_name_or_path: '/home/ubuntu/projects/collie/cache/llama-65b'
 cache_dir: '/home/ubuntu/projects/collie/cache'
+#model_name_or_path: '/home/ubuntu/projects/tunelite/cache/llama-65b'
+#cache_dir: '/home/ubuntu/projects/tunelite/cache'
 # data
 dataset_name: 'ARC-Challenge'
+#dataset_name: 'ARC-Easy'
+#dataset_name: 'openbookqa'
 refresh: false
 data_tag: 'src'
 max_length: 256
@@ -19,9 +23,9 @@ per_device_train_batch_size: 8
 per_device_eval_batch_size: 2
 learning_rate: 0.03
 weight_decay: 0
-num_train_epochs: 10
+num_train_epochs: 30
 lr_scheduler_type: 'constant'
-warmup: 0.05
+warmup: 0.01666667
 clip_grad_norm: 1.0
 #clip_loss_value: 5.0
 log_level: 'info'

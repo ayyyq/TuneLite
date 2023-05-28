@@ -39,7 +39,7 @@ def compute_metrics(all_pred, eval_dataset, eval_prefix=None):
 
 def train():
     # ========== 1. logs and args ==========
-    torch.set_default_dtype(torch.float16)
+    torch.set_default_dtype(torch.bfloat16)
     # torch.set_default_tensor_type(torch.cuda.BFloat16Tensor)
     parser = HfArgumentParser((ModelArguments, DataArguments, MyCollieArguments))
     if sys.argv[-1].endswith(".yaml"):
@@ -92,7 +92,10 @@ def train():
         config=config,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        use_fast=False
+    )
     tokenizer.pad_token_id = 0
 
     # ========== 3. Preprocessing the datasets. ==========

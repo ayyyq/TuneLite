@@ -9,6 +9,9 @@ max_length: 256
 # collie
 # trainer
 peft_type: 'lora'
+lora_only: true
+hf_lr_scheduler_type: 'constant_with_warmup'
+hf_warmup: 0.05
 tag: 'test'
 output_dir: 'outputs'
 overwrite_output_dir: true
@@ -18,12 +21,12 @@ do_eval: false
 evaluation_strategy: 'epoch'
 per_device_train_batch_size: 8
 per_device_eval_batch_size: 2
-learning_rate: 0.02
+learning_rate: 0.0001
 weight_decay: 0
 num_train_epochs: 10
 lr_scheduler_type: 'constant'
 warmup: 0.05
-clip_grad_value: 0
+clip_grad_norm: 1.0
 #clip_loss_value: 5.0
 log_level: 'info'
 logging_steps: 1
