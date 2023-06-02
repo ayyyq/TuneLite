@@ -21,7 +21,7 @@ try:
 except:
     pass
 
-from .utils import LearningRateScheduler, WandbLogger
+from .utils import LearningRateScheduler, WandbLogger, DynamicLossScaler
 from collie.log import print
 
 
@@ -94,12 +94,23 @@ class InplaceZeroTrainer:
 
         get_accelerator().empty_cache()
 
+        # loss scaler
+        self.loss_scaler = DynamicLossScaler(
+            init_scale=2 ** 16,
+        ) # TODO: add args
+
     def inplace_grad(self):
         # An approximation of in-place grad update under zero3 of deepspeed
         def func(x):
             with torch.no_grad():
                 for n, p in self.model.named_parameters():
                     if p.grad is not None:
+                        if self.loss_scaler.has_overflow_serial or self.loss_scaler._has_inf_or_nan(p.grad):
+                            p.grad = None
+                            self.loss_scaler.has_overflow_serial = True
+                            break
+                        # print(p.grad)
+                        p.grad.div_(self.loss_scaler.loss_scale)
                         torch.distributed.all_reduce(p.grad, op=torch.distributed.ReduceOp.AVG, async_op=False)
                         if self.gather_norm:
                             grad_fp32 = p.grad.detach().clone().to(torch.float32)
@@ -123,7 +134,7 @@ class InplaceZeroTrainer:
                                                             max=self.collie_args.clip_grad_value)
                                 if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0 and self.clip_coef is not None:
                                     partitioned_grad_fp32.mul_(self.clip_coef)
-                                partitioned_p_fp32 -= (self.lr * partitioned_grad_fp32)
+                                partitioned_p_fp32.add_(partitioned_grad_fp32, alpha=-self.lr)
                                 partitioned_p.copy_(partitioned_p_fp32)
                             else:
                                 partitioned_grad = one_dim_grad.narrow(0, start, partition_size)
@@ -135,7 +146,7 @@ class InplaceZeroTrainer:
                                 if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0 and self.clip_coef is not None:
                                     partitioned_grad_fp32.mul_(self.clip_coef)
                                 ds_tensor_fp32 = p.ds_tensor.detach().clone().to(torch.float32)
-                                ds_tensor_fp32 -= (self.lr * partitioned_grad_fp32)
+                                ds_tensor_fp32.add_(partitioned_grad_fp32, alpha=-self.lr)
                                 p.ds_tensor.copy_(ds_tensor_fp32)
                             p.grad = None
             return x
@@ -181,20 +192,42 @@ class InplaceZeroTrainer:
                     if self.collie_args.clip_grad_norm is not None and self.collie_args.clip_grad_norm > 0:
                         self.gather_norm = True
                         self.grad_norms = []
+                        self.loss_scaler.has_overflow_serial = False
+                        scaled_loss = loss * self.loss_scaler.loss_scale
 
-                        loss.backward(retain_graph=True)
+                        scaled_loss.backward()
                         # update the last one since the hook function will not be called for the last parameter
                         self.grad_func(0)
+
+                        if self.loss_scaler.has_overflow_serial:
+                            print(f"Gradient overflow, skipping step {self.global_step}")
+                            self.loss_scaler.update_scale(overflow=True)
+                            with torch.no_grad():
+                                for n, p in self.model.named_parameters():
+                                    p.grad = None
+                            self.model.optimizer.get_param_coordinator(training=True).reset_step()
+                            tqb.set_postfix({'loss': loss.item()})
+                            if self.allow_print:
+                                self.wandb.log(
+                                    {
+                                        'train/loss': loss.item(),
+                                        'train/learning_rate': self.lr,
+                                        'train/global_step': self.global_step,
+                                    },
+                                    step=self.global_step
+                                )
+                            continue
 
                         with torch.no_grad():
                             # The norm is computed over all gradients together, as if they were
                             # concatenated into a single vector. Gradients are modified in-place.
                             self.grad_norms = torch.stack(self.grad_norms)
-                            device = torch.device(f"cuda:{self.collie_args.local_rank}")
-                            all_grad_norms = torch.zeros(self.collie_args.world_size * self.grad_norms.shape[0], dtype=self.grad_norms.dtype, device=device)
-                            torch.distributed.all_gather_into_tensor(all_grad_norms, self.grad_norms)
+                            # device = torch.device(f"cuda:{self.collie_args.local_rank}")
+                            # all_grad_norms = torch.zeros(self.collie_args.world_size * self.grad_norms.shape[0], dtype=self.grad_norms.dtype, device=device)
+                            # torch.distributed.all_gather_into_tensor(all_grad_norms, self.grad_norms)
 
-                            total_norm = torch.norm(all_grad_norms, 2.0)
+                            # total_norm = torch.norm(all_grad_norms, 2.0) / self.collie_args.world_size
+                            total_norm = torch.norm(self.grad_norms, 2.0)
                             self.clip_coef = float(self.collie_args.clip_grad_norm) / (total_norm + 1e-6)
                             self.clip_coef = torch.clamp(self.clip_coef, max=1.0)
                         self.gather_norm = False
@@ -221,9 +254,12 @@ class InplaceZeroTrainer:
                             loss = loss_fct(shift_logits.view(shift_labels.shape[0] * shift_labels.shape[1], -1),
                                             shift_labels.view(-1).cuda())
 
-                    loss.backward()
+                    scaled_loss = loss * self.loss_scaler.loss_scale
+
+                    scaled_loss.backward()
                     # update the last one since the hook function will not be called for the last parameter
                     self.grad_func(0)
+                    self.loss_scaler.update_scale(overflow=False)
                     self.model.optimizer.get_param_coordinator(training=True).reset_step()
 
                     tqb.set_postfix({'loss': loss.item()})
